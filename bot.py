@@ -4,7 +4,7 @@ import time
 import random
 from datetime import datetime
 
-_defi_core_ready = False
+_defi_core_ready = False 
 
 DEFI_OPERATIONS = [
     "Initializing OpenFi protocol connection",
@@ -279,3 +279,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n\n❌ Fatal error: {str(e)}")
         sys.exit(1)
+
