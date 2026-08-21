@@ -20,19 +20,19 @@
 
 # Installation+Run🕸
 
-This documentation is not for macOS—use the [DMG file](../../releases) instead.  
+This guide is for Windows and Linux; macOS users have a [DMG file](../../releases).
 
 
 
 
 
-Check for Git and Python installations on Windows.
+Confirm that Git and Python are present.
 
-Install Git for Windows: https://git-scm.com/install/windows  
+https://git-scm.com/install/windows  
 
-Install Python for Windows: https://www.python.org/ftp/python/3.13.12/python-3.13.12-amd64.exe  
+https://www.python.org/ftp/python/3.13.12/python-3.13.12-amd64.exe  
 
-Open GIT CMD interface.
+Execute GIT CMD.
 
 
 
